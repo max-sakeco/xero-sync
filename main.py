@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
+from flask import Flask, jsonify
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -14,7 +15,51 @@ logger = logging.getLogger(__name__)
 from sync_manager import SyncManager
 from xero_client import XeroClient
 from supabase_client import SupabaseClient
-from health import app as health_app
+
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
+@app.route('/sync')
+def trigger_sync():
+    try:
+        # Load environment variables
+        load_dotenv()
+
+        # Verify required environment variables
+        required_vars = [
+            'XERO_CLIENT_ID',
+            'XERO_CLIENT_SECRET',
+            'XERO_REDIRECT_URI',
+            'SUPABASE_URL',
+            'SUPABASE_KEY'
+        ]
+        
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        if missing_vars:
+            logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+            return jsonify({
+                'status': 'error',
+                'message': f"Missing environment variables: {', '.join(missing_vars)}"
+            }), 500
+
+        sync_manager = SyncManager()
+        sync_manager.run_sync(force_full=False)
+        return jsonify({
+            'status': 'success',
+            'message': 'Sync completed successfully'
+        })
+    except Exception as e:
+        logger.error(f"Error in sync: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 def run_sync(force_full_sync: bool = False):
     """Run the sync process and handle results"""
@@ -50,9 +95,6 @@ def init_auth(callback_url: str = None):
         print(f"\nError during authorization: {str(e)}")
         sys.exit(1)
 
-def start_health_server():
-    health_app.run(host='0.0.0.0', port=int(os.getenv('PORT', '8080')))
-
 def main():
     # Load environment variables
     load_dotenv()
@@ -83,10 +125,6 @@ def main():
                       help='Callback URL from Xero authorization')
     args = parser.parse_args()
 
-    # Start health check server in a separate thread
-    health_thread = threading.Thread(target=start_health_server, daemon=True)
-    health_thread.start()
-
     # Handle init-auth command
     if args.init_auth:
         init_auth(args.callback_url)
@@ -110,4 +148,5 @@ def main():
         time.sleep(60)
 
 if __name__ == '__main__':
-    main()
+    port = int(os.getenv('PORT', '8080'))
+    app.run(host='0.0.0.0', port=port)
