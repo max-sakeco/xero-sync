@@ -5,10 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "numReplicas": 1,
     "healthcheckPath": "/",
-    "healthcheckTimeout": 60,
-    "restartPolicyType": "on_failure",
     "port": 8080
   }
 }
