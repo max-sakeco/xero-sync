@@ -3,12 +3,14 @@ import sys
 import time
 import argparse
 import schedule
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
 
 from sync_manager import SyncManager
 from xero_client import XeroClient
 from supabase_client import SupabaseClient
+from health import app as health_app
 
 def run_sync(force_full_sync: bool = False):
     """Run the sync process and handle results"""
@@ -44,6 +46,9 @@ def init_auth(callback_url: str = None):
         print(f"\nError during authorization: {str(e)}")
         sys.exit(1)
 
+def start_health_server():
+    health_app.run(host='0.0.0.0', port=int(os.getenv('PORT', '8080')))
+
 def main():
     # Load environment variables
     load_dotenv()
@@ -59,6 +64,10 @@ def main():
     parser.add_argument('--callback-url', type=str,
                       help='Callback URL from Xero authorization')
     args = parser.parse_args()
+
+    # Start health check server in a separate thread
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
 
     # Handle init-auth command
     if args.init_auth:

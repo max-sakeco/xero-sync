@@ -1,0 +1,13 @@
+[build]
+builder = "nixpacks"
+buildCommand = "pip install -r requirements.txt"
+
+[deploy]
+startCommand = "python main.py --sync-now"
+restartPolicyType = "on-failure"
+restartPolicyMaxRetries = 10
+healthcheckPath = "/"
+healthcheckTimeout = 300
+
+[service]
+name = "xero-sync"
