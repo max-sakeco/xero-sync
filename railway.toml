@@ -4,8 +4,7 @@ buildCommand = "pip install -r requirements.txt"
 
 [deploy]
 startCommand = "python main.py --sync-now"
-restartPolicyType = "on-failure"
-restartPolicyMaxRetries = 10
+restartPolicyType = "never"
 healthcheckPath = "/"
 healthcheckTimeout = 300
 
