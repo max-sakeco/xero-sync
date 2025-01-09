@@ -5,12 +5,10 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "healthcheckPath": "/",
-    "healthcheckTimeout": 30,
-    "restartPolicyType": "on_failure",
     "numReplicas": 1,
-    "healthcheckProtocol": "http",
-    "port": 8080,
-    "startCommand": "gunicorn --bind 0.0.0.0:8080 wsgi:app --log-level debug"
+    "healthcheckPath": "/",
+    "healthcheckTimeout": 60,
+    "restartPolicyType": "on_failure",
+    "port": 8080
   }
 }
