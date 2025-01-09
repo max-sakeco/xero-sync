@@ -1,0 +1,7 @@
+xero-python==1.21.0
+python-dotenv==1.0.0
+supabase==1.0.3
+schedule==1.2.0
+requests==2.31.0
+python-dateutil==2.8.2
+flask==3.0.0
