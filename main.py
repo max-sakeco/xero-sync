@@ -6,6 +6,10 @@ import schedule
 import threading
 from datetime import datetime
 from dotenv import load_dotenv
+import logging
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 from sync_manager import SyncManager
 from xero_client import XeroClient
@@ -52,6 +56,20 @@ def start_health_server():
 def main():
     # Load environment variables
     load_dotenv()
+
+    # Verify required environment variables
+    required_vars = [
+        'XERO_CLIENT_ID',
+        'XERO_CLIENT_SECRET',
+        'XERO_REDIRECT_URI',
+        'SUPABASE_URL',
+        'SUPABASE_KEY'
+    ]
+    
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        sys.exit(1)
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Xero to Supabase Invoice Sync')
