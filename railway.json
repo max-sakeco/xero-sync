@@ -4,8 +4,10 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python app.py",
+    "startCommand": "gunicorn wsgi:app --bind 0.0.0.0:$PORT",
     "healthcheckPath": "/",
-    "healthcheckTimeout": 10
+    "healthcheckTimeout": 10,
+    "restartPolicyType": "on_failure",
+    "numReplicas": 1
   }
 }
