@@ -5,11 +5,11 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "healthcheckPath": "/",
+    "healthcheckPath": "/health",
     "healthcheckTimeout": 30,
     "restartPolicyType": "on_failure",
     "numReplicas": 1,
-    "startCommand": null,
-    "healthcheckProtocol": "http"
+    "healthcheckProtocol": "http",
+    "port": 8080
   }
 }
