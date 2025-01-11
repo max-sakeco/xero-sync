@@ -1,16 +1,28 @@
 import os
-from supabase import create_client, Client
+from supabase import Client, create_client
 import logging
+from typing import Optional, Dict
 
 logger = logging.getLogger(__name__)
 
 class SupabaseClient:
     def __init__(self):
-        self.url = os.environ.get('SUPABASE_URL')
-        self.key = os.environ.get('SUPABASE_KEY')
-        self.client = create_client(self.url, self.key)
+        try:
+            url: str = os.environ.get('SUPABASE_URL', '')
+            key: str = os.environ.get('SUPABASE_KEY', '')
+            
+            if not url or not key:
+                raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY environment variables")
+            
+            # Create client without any additional arguments
+            self.client = create_client(url, key)
+            logger.info("Supabase client initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Supabase client: {str(e)}")
+            raise
 
-    def store_token(self, token: dict, tenant_id: str):
+    def store_token(self, token: Dict, tenant_id: str) -> Optional[Dict]:
         """Store Xero token in Supabase"""
         try:
             data = {
@@ -20,18 +32,22 @@ class SupabaseClient:
             
             result = self.client.table('xero_tokens').upsert(data).execute()
             logger.info("Token stored successfully")
-            return result
+            return result.data if result else None
+            
         except Exception as e:
             logger.error(f"Error storing token: {str(e)}")
             raise
 
-    def get_token(self):
+    def get_token(self) -> Optional[Dict]:
         """Get latest Xero token from Supabase"""
         try:
             result = self.client.table('xero_tokens').select("*").limit(1).execute()
             if result.data and len(result.data) > 0:
+                logger.info("Token retrieved successfully")
                 return result.data[0]
+            logger.warning("No token found in database")
             return None
+            
         except Exception as e:
             logger.error(f"Error getting token: {str(e)}")
             raise
