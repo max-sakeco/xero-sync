@@ -1,5 +1,5 @@
 import os
-from supabase import Client, create_client
+from supabase import create_client
 import logging
 from typing import Optional, Dict
 
@@ -14,8 +14,12 @@ class SupabaseClient:
             if not url or not key:
                 raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY environment variables")
             
-            # Create client without any additional arguments
-            self.client = create_client(url, key)
+            # Initialize without any extra options
+            self.client = create_client(
+                supabase_url=url,
+                supabase_key=key
+            )
+            
             logger.info("Supabase client initialized successfully")
             
         except Exception as e:
