@@ -26,20 +26,31 @@ class SupabaseClient:
             logger.error(f"Failed to initialize Supabase client: {str(e)}")
             raise
 
+    def _format_timestamp(self, timestamp) -> str:
+        """Convert timestamp to ISO format"""
+        if isinstance(timestamp, (int, float)):
+            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            return dt.isoformat()
+        return timestamp
+
     def store_token(self, token: Dict, tenant_id: str) -> Optional[Dict]:
         """Store Xero token in Supabase"""
         try:
+            # Convert expires_at to proper timestamp format
+            expires_at = self._format_timestamp(token.get('expires_at'))
+            
             data = {
                 'tenant_id': tenant_id,
                 'access_token': token.get('access_token'),
                 'refresh_token': token.get('refresh_token'),
                 'token_type': token.get('token_type', 'Bearer'),
-                'expires_at': token.get('expires_at'),
+                'expires_at': expires_at,
                 'updated_at': datetime.now(timezone.utc).isoformat()
             }
             
-            logger.info("Preparing to store token data")
-            result = self.client.table('tokens').upsert(data, on_conflict='id').execute()
+            logger.info(f"Preparing to store token data with expires_at: {expires_at}")
+            # Use id=1 for upsert since we only have one token
+            result = self.client.table('tokens').update(data).eq('id', 1).execute()
             logger.info("Token stored successfully")
             return result.data if result else None
             
