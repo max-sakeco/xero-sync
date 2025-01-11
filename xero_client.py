@@ -1,23 +1,22 @@
-import os
+from typing import List, Dict, Optional
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
-import logging
-import time
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
 from requests_oauthlib import OAuth2Session
-
-from xero import Xero
-from xero.auth import OAuth2Credentials
-from xero.constants import XeroScopes
+import os
+import logging
 import requests
+import json
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Allow OAuth2 without HTTPS for development
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
 logger = logging.getLogger(__name__)
 
-# Allow insecure transport for development
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+# Define scopes directly
+SCOPES = [
+    'accounting.transactions',
+    'accounting.contacts',
+    'offline_access'
+]
 
 class XeroClient:
     def __init__(self, supabase_client):
@@ -25,223 +24,321 @@ class XeroClient:
         self.client_secret = os.getenv('XERO_CLIENT_SECRET')
         self.redirect_uri = os.getenv('XERO_REDIRECT_URI')
         self.supabase = supabase_client
-        self.xero_client = None
-        self.credentials = None
+        self.token = None
         self.tenant_id = None
-        
-        # Configure retry strategy
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        self.adapter = HTTPAdapter(max_retries=retry_strategy)
 
-    def initialize_auth(self) -> str:
-        """Initialize OAuth2 flow and return authorization URL"""
-        # Create a session with retry strategy
-        session = OAuth2Session(
+        # OAuth endpoints
+        self.authorization_url = 'https://login.xero.com/identity/connect/authorize'
+        self.token_url = 'https://identity.xero.com/connect/token'
+        self.connections_url = 'https://api.xero.com/connections'
+        self.api_url = 'https://api.xero.com/api.xro/2.0'
+
+        # Initialize OAuth session
+        self.oauth = OAuth2Session(
             self.client_id,
             redirect_uri=self.redirect_uri,
-            scope=[
-                XeroScopes.ACCOUNTING_TRANSACTIONS,
-                XeroScopes.ACCOUNTING_CONTACTS,
-                XeroScopes.OFFLINE_ACCESS
-            ]
+            scope=['offline_access', 'accounting.transactions', 'accounting.contacts']
         )
-        session.mount("https://", self.adapter)
-        session.mount("http://", self.adapter)
-        
-        self.credentials = OAuth2Credentials(
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            callback_uri=self.redirect_uri,
-            scope=[
-                XeroScopes.ACCOUNTING_TRANSACTIONS,
-                XeroScopes.ACCOUNTING_CONTACTS,
-                XeroScopes.OFFLINE_ACCESS
-            ]
-        )
-        return self.credentials.generate_url()
-
-    def handle_callback(self, auth_response: str) -> None:
-        """Handle OAuth callback and store tokens"""
-        # Initialize credentials first if not already done
-        if not self.credentials:
-            self.credentials = OAuth2Credentials(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                callback_uri=self.redirect_uri,
-                scope=[
-                    XeroScopes.ACCOUNTING_TRANSACTIONS,
-                    XeroScopes.ACCOUNTING_CONTACTS,
-                    XeroScopes.OFFLINE_ACCESS
-                ]
-            )
-        
-        try:
-            logger.info("Verifying Xero callback")
-            # Create a session with retry strategy
-            session = OAuth2Session(
-                self.client_id,
-                redirect_uri=self.redirect_uri,
-                scope=[
-                    XeroScopes.ACCOUNTING_TRANSACTIONS,
-                    XeroScopes.ACCOUNTING_CONTACTS,
-                    XeroScopes.OFFLINE_ACCESS
-                ]
-            )
-            session.mount("https://", self.adapter)
-            session.mount("http://", self.adapter)
-            
-            # Use the session to verify the callback
-            self.credentials.verify(auth_response)
-            
-            # Get the tenant ID from the first connected organization
-            logger.info("Getting Xero tenants")
-            self.xero_client = Xero(self.credentials)
-            tenants = self.credentials.get_tenants()
-            if not tenants:
-                raise Exception("No Xero organizations authorized")
-            
-            self.tenant_id = tenants[0]['tenantId']
-            logger.info(f"Got tenant ID: {self.tenant_id}")
-            self._store_tokens()
-        except Exception as e:
-            logger.error(f"Error handling Xero callback: {str(e)}")
-            raise
-
-    def _store_tokens(self) -> None:
-        """Store OAuth tokens in Supabase"""
-        if not self.tenant_id:
-            raise Exception("No tenant ID available")
-
-        token_data = {
-            'tenant_id': self.tenant_id,
-            'access_token': self.credentials.token['access_token'],
-            'refresh_token': self.credentials.token['refresh_token'],
-            'token_type': self.credentials.token['token_type'],
-            'expires_at': datetime.fromtimestamp(
-                self.credentials.token['expires_at'],
-                tz=timezone.utc
-            ).isoformat()
-        }
-        
-        logger.info(f"Storing tokens for tenant {self.tenant_id}")
-        try:
-            # First try to update existing token
-            result = self.supabase.client.from_('oauth_tokens')\
-                .update(token_data)\
-                .eq('tenant_id', self.tenant_id)\
-                .execute()
-            
-            # If no rows were updated, insert new token
-            if not result.data:
-                self.supabase.client.from_('oauth_tokens')\
-                    .insert(token_data)\
-                    .execute()
-        except Exception as e:
-            logger.error(f"Error storing tokens: {str(e)}")
-            raise
-
-    def _load_tokens(self) -> Optional[Dict]:
-        """Load tokens from Supabase"""
-        result = self.supabase.client.from_('oauth_tokens')\
-            .select('*')\
-            .limit(1)\
-            .execute()
-            
-        if result.data:
-            return result.data[0]
-        return None
 
     def ensure_authenticated(self) -> bool:
-        """Ensure we have valid tokens and refresh if needed"""
-        if self.xero_client and not self.credentials.expired():
-            return True
-
-        tokens = self._load_tokens()
-        if not tokens:
+        """Check if we have valid tokens"""
+        try:
+            logger.info("Checking authentication")
+            logger.debug(f"Current token: {json.dumps(self.token, indent=2) if self.token else None}")
+            logger.debug(f"Current tenant_id: {self.tenant_id}")
+            
+            if not self.token or not self.tenant_id:
+                logger.info("No token or tenant_id, trying to load from storage")
+                if not self.load_stored_token():
+                    logger.error("No stored token found")
+                    return False
+            
+            # Check if token is expired
+            if self.token:
+                logger.info(f"Using tenant_id: {self.tenant_id}")
+                logger.debug(f"Token present: {bool(self.token)}")
+                return True
+            
+            logger.error("No valid token found")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Authentication check failed: {str(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"Response content: {e.response.text}")
             return False
 
-        self.tenant_id = tokens['tenant_id']
-        self.credentials = OAuth2Credentials(
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            callback_uri=self.redirect_uri,
-            token={
-                'access_token': tokens['access_token'],
-                'refresh_token': tokens['refresh_token'],
-                'token_type': tokens['token_type'],
-                'expires_at': datetime.fromisoformat(tokens['expires_at']).timestamp()
+    def load_stored_token(self) -> bool:
+        """Load stored token from database"""
+        try:
+            logger.info("Attempting to load stored token")
+            result = self.supabase.client.from_('oauth_tokens')\
+                .select('*')\
+                .order('updated_at', desc=True)\
+                .limit(1)\
+                .execute()
+
+            logger.debug(f"Load result: {json.dumps(result.data, indent=2)}")
+
+            if result.data:
+                data = result.data[0]
+                # Reconstruct token dictionary
+                self.token = {
+                    'access_token': data['access_token'],
+                    'refresh_token': data['refresh_token'],
+                    'token_type': data['token_type'],
+                    'expires_at': datetime.fromisoformat(data['expires_at']).timestamp()
+                }
+                self.tenant_id = data['tenant_id']
+                logger.info(f"Loaded stored token for tenant: {self.tenant_id}")
+                logger.debug(f"Reconstructed token: {json.dumps(self.token, indent=2)}")
+                return True
+            
+            logger.error("No token found in database")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error loading stored token: {str(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"Response content: {e.response.text}")
+            return False
+
+    def get_authorization_url(self) -> str:
+        """Get the authorization URL for Xero OAuth"""
+        try:
+            authorization_url, _ = self.oauth.authorization_url(
+                self.authorization_url
+            )
+            return authorization_url
+        except Exception as e:
+            logger.error(f"Failed to get authorization URL: {str(e)}")
+            raise
+
+    def process_callback(self, code: str) -> bool:
+        """Process OAuth callback"""
+        try:
+            logger.info("Processing Xero callback")
+            logger.info(f"Using code: {code[:10]}...")
+            
+            # Exchange code for token
+            logger.info("Fetching token...")
+            token = self.oauth.fetch_token(
+                self.token_url,
+                code=code,
+                client_secret=self.client_secret,
+                include_client_id=True
+            )
+            logger.info("Successfully obtained token")
+            logger.debug(f"Token received: {json.dumps(token, indent=2)}")
+
+            # Get tenant ID
+            logger.info("Getting tenant ID...")
+            response = requests.get(
+                self.connections_url,
+                headers={
+                    'Authorization': f"Bearer {token['access_token']}",
+                    'Content-Type': 'application/json'
+                }
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Failed to get connections. Status: {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                return False
+
+            connections = response.json()
+            logger.debug(f"Connections response: {json.dumps(connections, indent=2)}")
+            
+            if not connections:
+                logger.error("No Xero tenants connected")
+                return False
+
+            tenant_id = connections[0]['tenantId']
+            logger.info(f"Got tenant ID: {tenant_id}")
+
+            # Store token and tenant ID
+            self.token = token
+            self.tenant_id = tenant_id
+            
+            # Save to database
+            logger.info("Storing token...")
+            self.store_token()
+            
+            logger.info("Authentication complete")
+            return True
+
+        except Exception as e:
+            logger.error(f"Callback failed: {str(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"Response content: {e.response.text}")
+            return False
+
+    def store_token(self):
+        """Store token in database"""
+        try:
+            logger.info(f"Storing tokens for tenant {self.tenant_id}")
+            logger.debug(f"Token to store: {json.dumps(self.token, indent=2)}")
+            
+            # Extract token components
+            data = {
+                'tenant_id': self.tenant_id,
+                'access_token': self.token['access_token'],
+                'refresh_token': self.token['refresh_token'],
+                'token_type': self.token['token_type'],
+                'expires_at': datetime.fromtimestamp(self.token['expires_at'], tz=timezone.utc).isoformat()
             }
-        )
+            logger.debug(f"Data to insert: {json.dumps(data, indent=2)}")
+            
+            # Insert new token
+            result = self.supabase.client.from_('oauth_tokens')\
+                .upsert(data, on_conflict='tenant_id')\
+                .execute()
+                
+            logger.debug(f"Store result: {json.dumps(result.data, indent=2)}")
 
-        if self.credentials.expired():
-            self.credentials.refresh()
-            self._store_tokens()
-
-        # Set the tenant ID for API calls
-        self.credentials.tenant_id = self.tenant_id
-        self.xero_client = Xero(self.credentials)
-        return True
+        except Exception as e:
+            logger.error(f"Failed to store token: {str(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"Response content: {e.response.text}")
+            raise
 
     def get_invoices(self, modified_since: Optional[datetime] = None) -> List[Dict]:
-        """Fetch invoices from Xero with pagination"""
-        if not self.ensure_authenticated():
-            raise Exception("Not authenticated with Xero")
+        """Get invoices from Xero"""
+        try:
+            if not self.ensure_authenticated():
+                raise Exception("Not authenticated with Xero")
 
-        # Get the current token from our database
-        token = self.supabase.get_token(self.tenant_id)
-        if not token:
-            raise Exception("No token found in database")
+            all_invoices = []
+            page = 1
+            page_size = 100  # Xero's maximum page size
 
-        all_invoices = []
-        page = 1
-        while True:
-            params = {
-                'page': page,
-                'order': 'UpdatedDateUtc DESC'
-            }
-            
-            # Set modified_since header
-            headers = {
-                'Authorization': f'Bearer {token["access_token"]}',
-                'Xero-tenant-id': self.tenant_id,
-                'Accept': 'application/json'
-            }
-            if modified_since:
-                # Format modified_since as RFC 1123 format
-                headers['If-Modified-Since'] = modified_since.strftime('%a, %d %b %Y %H:%M:%S GMT')
+            while True:
+                headers = {
+                    'Authorization': f"Bearer {self.token['access_token']}",
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'Xero-tenant-id': self.tenant_id
+                }
 
-            try:
-                logger.info(f"Fetching invoices page {page} with params: {params} and headers: {headers}")
-                logger.info(f"Using tenant ID: {self.tenant_id}")
-                
-                # Make the request directly
-                url = 'https://api.xero.com/api.xro/2.0/Invoices'
-                response = requests.get(url, params=params, headers=headers)
-                response.raise_for_status()
-                
-                # Parse the response
-                data = response.json()
-                if not data.get('Invoices'):
+                if modified_since:
+                    headers['If-Modified-Since'] = modified_since.strftime('%Y-%m-%dT%H:%M:%S')
+
+                params = {
+                    'page': page,
+                    'pageSize': page_size,
+                    'summaryOnly': 'false',
+                    'includeArchived': 'true',
+                    'order': 'UpdatedDateUTC ASC'
+                }
+
+                url = f"{self.api_url}/Invoices"
+                logger.info(f"Fetching invoices page {page}")
+                logger.debug(f"URL: {url}")
+                logger.debug(f"Headers: {headers}")
+                logger.debug(f"Params: {params}")
+
+                response = requests.get(url, headers=headers, params=params)
+                logger.debug(f"Response status: {response.status_code}")
+                logger.debug(f"Response content: {response.text[:1000]}")  # First 1000 chars
+
+                if response.status_code == 404:
+                    logger.info("No more pages")
                     break
-                
-                invoices = data['Invoices']
-                logger.info(f"Got response with {len(invoices)} invoices")
 
-                # Add tenant_id to each invoice
-                for invoice in invoices:
-                    invoice['tenant_id'] = self.tenant_id
+                response.raise_for_status()
+                data = response.json()
+                invoices = data.get('Invoices', [])
+
+                if not invoices:
+                    logger.info("No invoices in response")
+                    break
 
                 all_invoices.extend(invoices)
-                page += 1
-            except Exception as e:
-                logger.error(f"Error fetching invoices: {str(e)}")
-                logger.error(f"Error type: {type(e)}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                raise Exception(f"Error fetching invoices from Xero: {str(e)}")
+                logger.info(f"Fetched {len(invoices)} invoices from page {page}")
 
-        return all_invoices
+                # Check if we got less than a full page
+                if len(invoices) < page_size:
+                    logger.info("Last page (incomplete)")
+                    break
+
+                page += 1
+                logger.info(f"Moving to page {page}")
+
+            logger.info(f"Successfully fetched {len(all_invoices)} invoices in total")
+            return all_invoices
+
+        except Exception as e:
+            logger.error(f"Error fetching invoices: {str(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"Response content: {e.response.text}")
+            raise
+
+    def get_contacts(self, modified_since: Optional[datetime] = None) -> List[Dict]:
+        """Get contacts from Xero"""
+        try:
+            if not self.ensure_authenticated():
+                raise Exception("Not authenticated with Xero")
+
+            all_contacts = []
+            page = 1
+            page_size = 100  # Xero's maximum page size
+
+            while True:
+                headers = {
+                    'Authorization': f"Bearer {self.token['access_token']}",
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'Xero-tenant-id': self.tenant_id
+                }
+
+                if modified_since:
+                    headers['If-Modified-Since'] = modified_since.strftime('%Y-%m-%dT%H:%M:%S')
+
+                params = {
+                    'page': page,
+                    'pageSize': page_size,
+                    'includeArchived': 'true',
+                    'order': 'UpdatedDateUTC ASC'
+                }
+
+                url = f"{self.api_url}/Contacts"
+                logger.info(f"Fetching contacts page {page}")
+                logger.debug(f"URL: {url}")
+                logger.debug(f"Headers: {headers}")
+                logger.debug(f"Params: {params}")
+
+                response = requests.get(url, headers=headers, params=params)
+                logger.debug(f"Response status: {response.status_code}")
+                logger.debug(f"Response content: {response.text[:1000]}")
+
+                if response.status_code == 404:
+                    logger.info("No more pages")
+                    break
+
+                response.raise_for_status()
+                data = response.json()
+                contacts = data.get('Contacts', [])
+
+                if not contacts:
+                    logger.info("No contacts in response")
+                    break
+
+                all_contacts.extend(contacts)
+                logger.info(f"Fetched {len(contacts)} contacts from page {page}")
+
+                # Check if we got less than a full page
+                if len(contacts) < page_size:
+                    logger.info("Last page (incomplete)")
+                    break
+
+                page += 1
+                logger.info(f"Moving to page {page}")
+
+            logger.info(f"Successfully fetched {len(all_contacts)} contacts in total")
+            return all_contacts
+
+        except Exception as e:
+            logger.error(f"Error fetching contacts: {str(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"Response content: {e.response.text}")
+            raise

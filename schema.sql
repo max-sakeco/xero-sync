@@ -9,58 +9,79 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Table for storing Xero OAuth tokens
-CREATE TABLE IF NOT EXISTS oauth_tokens (
+-- Drop tables in correct order
+DROP TABLE IF EXISTS invoice_items_new;
+DROP TABLE IF EXISTS invoices_new;
+DROP TABLE IF EXISTS oauth_tokens;
+
+-- Recreate oauth_tokens table with scope
+CREATE TABLE oauth_tokens (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id UUID NOT NULL UNIQUE,
+    tenant_id TEXT NOT NULL UNIQUE,
     access_token TEXT NOT NULL,
     refresh_token TEXT NOT NULL,
-    token_type VARCHAR NOT NULL,
+    token_type VARCHAR(50) NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    scope TEXT,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table for storing Xero invoices
-CREATE TABLE IF NOT EXISTS invoices (
+-- Recreate invoices table
+CREATE TABLE invoices_new (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    invoice_id UUID NOT NULL UNIQUE,
-    tenant_id UUID NOT NULL,
-    contact_id UUID,
-    contact_name TEXT,
-    invoice_number TEXT,
-    reference TEXT,
-    issue_date TIMESTAMP WITH TIME ZONE,
-    due_date TIMESTAMP WITH TIME ZONE,
-    status TEXT,
-    line_amount_types TEXT,
-    sub_total DECIMAL(15,4),
-    total_tax DECIMAL(15,4),
-    total DECIMAL(15,4),
+    invoice_id VARCHAR NOT NULL UNIQUE,
+    tenant_id TEXT NOT NULL,
+    invoice_number VARCHAR,
+    reference VARCHAR,
+    type VARCHAR,
+    status VARCHAR,
+    contact_id VARCHAR,
+    contact_name VARCHAR,
+    date DATE,
+    due_date DATE,
+    updated_date_utc TIMESTAMP WITH TIME ZONE,
     currency_code VARCHAR(3),
-    type TEXT,
-    xero_updated_at TIMESTAMP WITH TIME ZONE,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (tenant_id) REFERENCES oauth_tokens(tenant_id)
+    sub_total DECIMAL(15,2),
+    total_tax DECIMAL(15,2),
+    total DECIMAL(15,2),
+    amount_due DECIMAL(15,2),
+    amount_paid DECIMAL(15,2),
+    amount_credited DECIMAL(15,2),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table for storing invoice line items
-CREATE TABLE IF NOT EXISTS invoice_items (
+-- Add updated_at trigger
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_oauth_tokens_updated_at') THEN
+        CREATE TRIGGER update_oauth_tokens_updated_at
+            BEFORE UPDATE ON oauth_tokens
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+END
+$$;
+
+-- Drop existing tables
+DROP TABLE IF EXISTS invoice_items;
+DROP TABLE IF EXISTS invoices;
+
+-- Create new tables with _new suffix
+CREATE TABLE invoice_items_new (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    item_id UUID NOT NULL UNIQUE,
-    invoice_id UUID NOT NULL,
-    tenant_id UUID NOT NULL,
+    xero_invoice_id VARCHAR REFERENCES invoices_new(invoice_id),
+    line_item_id VARCHAR,
     description TEXT,
-    quantity DECIMAL(15,4),
-    unit_amount DECIMAL(15,4),
-    tax_amount DECIMAL(15,4),
-    line_amount DECIMAL(15,4),
-    account_code TEXT,
-    tax_type TEXT,
-    item_code TEXT,
-    tracking JSONB,
+    quantity DECIMAL(15,2),
+    unit_amount DECIMAL(15,2),
+    tax_amount DECIMAL(15,2),
+    line_amount DECIMAL(15,2),
+    account_code VARCHAR,
+    tax_type VARCHAR,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (invoice_id) REFERENCES invoices(invoice_id),
-    FOREIGN KEY (tenant_id) REFERENCES oauth_tokens(tenant_id)
+    UNIQUE(xero_invoice_id, line_item_id)
 );
 
 -- Drop and recreate sync_logs table
@@ -68,15 +89,13 @@ DROP TABLE IF EXISTS sync_logs;
 CREATE TABLE sync_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     start_time TIMESTAMP WITH TIME ZONE NOT NULL,
-    end_time TIMESTAMP WITH TIME ZONE NOT NULL,
-    status TEXT NOT NULL,
-    error_message TEXT,
+    end_time TIMESTAMP WITH TIME ZONE,
+    status VARCHAR NOT NULL,
     records_processed INTEGER DEFAULT 0,
     records_created INTEGER DEFAULT 0,
     records_updated INTEGER DEFAULT 0,
-    items_processed INTEGER DEFAULT 0,
-    items_created INTEGER DEFAULT 0,
-    items_updated INTEGER DEFAULT 0
+    error_message TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Table for storing error logs
@@ -94,8 +113,8 @@ DO $$
 BEGIN
     -- Drop triggers if they exist
     DROP TRIGGER IF EXISTS update_oauth_tokens_updated_at ON oauth_tokens;
-    DROP TRIGGER IF EXISTS update_invoices_updated_at ON invoices;
-    DROP TRIGGER IF EXISTS update_invoice_items_updated_at ON invoice_items;
+    DROP TRIGGER IF EXISTS update_invoices_new_updated_at ON invoices_new;
+    DROP TRIGGER IF EXISTS update_invoice_items_new_updated_at ON invoice_items_new;
     
     -- Create triggers
     CREATE TRIGGER update_oauth_tokens_updated_at
@@ -103,13 +122,13 @@ BEGIN
         FOR EACH ROW
         EXECUTE FUNCTION update_updated_at_column();
     
-    CREATE TRIGGER update_invoices_updated_at
-        BEFORE UPDATE ON invoices
+    CREATE TRIGGER update_invoices_new_updated_at
+        BEFORE UPDATE ON invoices_new
         FOR EACH ROW
         EXECUTE FUNCTION update_updated_at_column();
     
-    CREATE TRIGGER update_invoice_items_updated_at
-        BEFORE UPDATE ON invoice_items
+    CREATE TRIGGER update_invoice_items_new_updated_at
+        BEFORE UPDATE ON invoice_items_new
         FOR EACH ROW
         EXECUTE FUNCTION update_updated_at_column();
 END $$;
@@ -131,14 +150,14 @@ BEGIN
     DROP INDEX IF EXISTS idx_error_logs_timestamp;
     
     -- Create indexes
-    CREATE INDEX idx_invoices_tenant_id ON invoices(tenant_id);
-    CREATE INDEX idx_invoices_contact_id ON invoices(contact_id);
-    CREATE INDEX idx_invoices_status ON invoices(status);
-    CREATE INDEX idx_invoices_xero_updated_at ON invoices(xero_updated_at);
+    CREATE INDEX idx_invoices_tenant_id ON invoices_new(tenant_id);
+    CREATE INDEX idx_invoices_contact_id ON invoices_new(contact_id);
+    CREATE INDEX idx_invoices_status ON invoices_new(status);
+    CREATE INDEX idx_invoices_xero_updated_at ON invoices_new(xero_updated_at);
     
-    CREATE INDEX idx_invoice_items_invoice_id ON invoice_items(invoice_id);
-    CREATE INDEX idx_invoice_items_tenant_id ON invoice_items(tenant_id);
-    CREATE INDEX idx_invoice_items_item_code ON invoice_items(item_code);
+    CREATE INDEX idx_invoice_items_invoice_id ON invoice_items_new(invoice_id);
+    CREATE INDEX idx_invoice_items_tenant_id ON invoice_items_new(tenant_id);
+    CREATE INDEX idx_invoice_items_item_code ON invoice_items_new(item_code);
     
     CREATE INDEX idx_sync_logs_status ON sync_logs(status);
     CREATE INDEX idx_sync_logs_start_time ON sync_logs(start_time);
@@ -146,3 +165,54 @@ BEGIN
     CREATE INDEX idx_error_logs_error_type ON error_logs(error_type);
     CREATE INDEX idx_error_logs_timestamp ON error_logs(timestamp);
 END $$;
+
+-- Add updated_at triggers
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_invoices_new_updated_at') THEN
+        CREATE TRIGGER update_invoices_new_updated_at
+            BEFORE UPDATE ON invoices_new
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_invoice_items_new_updated_at') THEN
+        CREATE TRIGGER update_invoice_items_new_updated_at
+            BEFORE UPDATE ON invoice_items_new
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+END
+$$;
+
+-- Drop and recreate contacts table
+DROP TABLE IF EXISTS contacts;
+
+CREATE TABLE contacts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    contact_id VARCHAR NOT NULL UNIQUE,
+    tenant_id TEXT NOT NULL REFERENCES oauth_tokens(tenant_id),
+    name VARCHAR,
+    first_name VARCHAR,
+    last_name VARCHAR,
+    email VARCHAR,
+    phone VARCHAR,
+    status VARCHAR,
+    updated_date_utc TIMESTAMP WITH TIME ZONE,
+    is_customer BOOLEAN DEFAULT FALSE,
+    is_supplier BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Add contacts trigger
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_contacts_updated_at') THEN
+        CREATE TRIGGER update_contacts_updated_at
+            BEFORE UPDATE ON contacts
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+END
+$$;
