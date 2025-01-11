@@ -184,75 +184,37 @@ class XeroClient:
                 logger.error(f"Response content: {e.response.text}")
             return False
 
-    def get_invoices(self, modified_since: Optional[datetime] = None) -> List[Dict]:
-        """Get invoices from Xero"""
+    def get_invoices(self, offset=0, limit=50):
+        """Get invoices from Xero with pagination"""
+        if not self.ensure_authenticated():
+            raise Exception("Not authenticated with Xero. Please visit /auth first")
+        
         try:
-            if not self.ensure_authenticated():
-                raise Exception("Not authenticated with Xero")
-
-            all_invoices = []
-            page = 1
-            page_size = 100  # Xero's maximum page size
-
-            while True:
-                headers = {
+            # Build URL with pagination parameters
+            url = f"{self.api_url}/Invoices"
+            params = {
+                'page': offset // limit + 1,  # Convert offset to page number
+                'pageSize': limit,
+                'order': 'UpdatedDateUTC DESC'
+            }
+            
+            response = requests.get(
+                url,
+                params=params,
+                headers={
                     'Authorization': f"Bearer {self.token['access_token']}",
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'Xero-tenant-id': self.tenant_id
+                    'Xero-tenant-id': self.tenant_id,
+                    'Accept': 'application/json'
                 }
-
-                if modified_since:
-                    headers['If-Modified-Since'] = modified_since.strftime('%Y-%m-%dT%H:%M:%S')
-
-                params = {
-                    'page': page,
-                    'pageSize': page_size,
-                    'summaryOnly': 'false',
-                    'includeArchived': 'true',
-                    'order': 'UpdatedDateUTC ASC'
-                }
-
-                url = f"{self.api_url}/Invoices"
-                logger.info(f"Fetching invoices page {page}")
-                logger.debug(f"URL: {url}")
-                logger.debug(f"Headers: {headers}")
-                logger.debug(f"Params: {params}")
-
-                response = requests.get(url, headers=headers, params=params)
-                logger.debug(f"Response status: {response.status_code}")
-                logger.debug(f"Response content: {response.text[:1000]}")  # First 1000 chars
-
-                if response.status_code == 404:
-                    logger.info("No more pages")
-                    break
-
-                response.raise_for_status()
-                data = response.json()
-                invoices = data.get('Invoices', [])
-
-                if not invoices:
-                    logger.info("No invoices in response")
-                    break
-
-                all_invoices.extend(invoices)
-                logger.info(f"Fetched {len(invoices)} invoices from page {page}")
-
-                # Check if we got less than a full page
-                if len(invoices) < page_size:
-                    logger.info("Last page (incomplete)")
-                    break
-
-                page += 1
-                logger.info(f"Moving to page {page}")
-
-            logger.info(f"Successfully fetched {len(all_invoices)} invoices in total")
-            return all_invoices
-
+            )
+            response.raise_for_status()
+            
+            # Extract invoices from response
+            data = response.json()
+            return data.get('Invoices', [])
+            
         except Exception as e:
-            logger.error(f"Error fetching invoices: {str(e)}")
-            if hasattr(e, 'response'):
-                logger.error(f"Response content: {e.response.text}")
+            logger.error(f"Error getting invoices: {str(e)}")
             raise
 
     def get_contacts(self, modified_since: Optional[datetime] = None) -> List[Dict]:
