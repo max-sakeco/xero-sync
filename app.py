@@ -20,27 +20,43 @@ is_production = os.environ.get('RENDER', False)
 def index():
     return {"status": "ok", "environment": "production" if is_production else "development"}
 
-@app.get("/auth")
-def auth():
-    """Start OAuth flow with Xero"""
+@app.route('/health')
+def health():
     try:
+        # Test Supabase connection
+        supabase = SupabaseClient()
+        # Test Xero client initialization
+        xero = XeroClient(supabase)
+        return {"status": "healthy", "message": "Services initialized successfully"}
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route('/auth')
+def auth():
+    """Start Xero OAuth flow"""
+    try:
+        logger.info("Starting auth flow")
         xero = XeroClient(SupabaseClient())
         authorization_url = xero.get_authorization_url()
-        logger.info(f"Generated authorization URL: {authorization_url}")
+        logger.info(f"Generated auth URL: {authorization_url}")
         return redirect(authorization_url)
     except Exception as e:
         logger.error(f"Auth failed: {str(e)}")
-        return {"message": str(e), "status": "error"}
+        return {"status": "error", "message": str(e)}, 500
 
 @app.route('/callback')
 def callback():
+    """Handle OAuth callback"""
     try:
+        logger.info("Handling callback")
         xero = XeroClient(SupabaseClient())
         auth_response = xero.callback(request.url)
+        logger.info("Callback processed successfully")
         return redirect(url_for('index'))
     except Exception as e:
         logger.error(f"Callback failed: {str(e)}")
-        return {"error": str(e)}, 400
+        return {"status": "error", "message": str(e)}, 500
 
 @app.get("/sync")
 def sync():
