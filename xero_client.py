@@ -274,3 +274,52 @@ class XeroClient:
         except Exception as e:
             logger.error(f"Error in sync_all: {str(e)}")
             raise
+
+    def process_invoice(self, invoice):
+        """Process a single invoice and its line items"""
+        try:
+            # Prepare invoice data
+            invoice_data = {
+                'invoice_id': invoice.get('InvoiceID'),
+                'invoice_number': invoice.get('InvoiceNumber'),
+                'type': invoice.get('Type'),
+                'status': invoice.get('Status'),
+                'sub_total': float(invoice.get('SubTotal', 0)),
+                'total_tax': float(invoice.get('TotalTax', 0)),
+                'total': float(invoice.get('Total', 0)),
+                'updated_date_utc': invoice.get('UpdatedDateUTC'),
+                'currency_code': invoice.get('CurrencyCode'),
+                'contact_id': invoice.get('Contact', {}).get('ContactID'),
+                'contact_name': invoice.get('Contact', {}).get('Name')
+            }
+            
+            # Store invoice in Supabase
+            self.supabase.client.table('invoices_new').upsert(
+                invoice_data, 
+                on_conflict='invoice_id'
+            ).execute()
+            
+            # Process line items
+            line_items = invoice.get('LineItems', [])
+            for item in line_items:
+                item_data = {
+                    'xero_invoice_id': invoice.get('InvoiceID'),
+                    'line_item_id': item.get('LineItemID'),
+                    'description': item.get('Description'),
+                    'quantity': float(item.get('Quantity', 0)),
+                    'unit_amount': float(item.get('UnitAmount', 0)),
+                    'tax_amount': float(item.get('TaxAmount', 0)),
+                    'line_amount': float(item.get('LineAmount', 0)),
+                    'account_code': item.get('AccountCode'),
+                    'tax_type': item.get('TaxType')
+                }
+                
+                # Store line item in Supabase
+                self.supabase.client.table('invoice_items_new').upsert(
+                    item_data,
+                    on_conflict='xero_invoice_id,line_item_id'
+                ).execute()
+                
+        except Exception as e:
+            logger.error(f"Error processing invoice {invoice.get('InvoiceID')}: {str(e)}")
+            raise
