@@ -293,6 +293,13 @@ class XeroClient:
     def process_invoice(self, invoice):
         """Process a single invoice and its line items"""
         try:
+            # Get tenant_id from token data
+            token_data = self.supabase.get_token()
+            tenant_id = token_data.get('tenant_id') if token_data else None
+            
+            if not tenant_id:
+                raise Exception("No tenant_id found in token data")
+            
             # Prepare invoice data
             invoice_data = {
                 'invoice_id': invoice.get('InvoiceID'),
@@ -305,10 +312,11 @@ class XeroClient:
                 'updated_date_utc': self._parse_xero_date(invoice.get('UpdatedDateUTC')),
                 'currency_code': invoice.get('CurrencyCode'),
                 'contact_id': invoice.get('Contact', {}).get('ContactID'),
-                'contact_name': invoice.get('Contact', {}).get('Name')
+                'contact_name': invoice.get('Contact', {}).get('Name'),
+                'tenant_id': tenant_id
             }
             
-            logger.info(f"Processing invoice {invoice_data['invoice_number']}")
+            logger.info(f"Processing invoice {invoice_data['invoice_number']} for tenant {tenant_id}")
             
             # Store invoice in Supabase
             self.supabase.client.table('invoices_new').upsert(
@@ -328,7 +336,8 @@ class XeroClient:
                     'tax_amount': float(item.get('TaxAmount', 0)),
                     'line_amount': float(item.get('LineAmount', 0)),
                     'account_code': item.get('AccountCode'),
-                    'tax_type': item.get('TaxType')
+                    'tax_type': item.get('TaxType'),
+                    'tenant_id': tenant_id
                 }
                 
                 # Store line item in Supabase
