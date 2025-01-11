@@ -28,6 +28,7 @@ class XeroClient:
             self.redirect_uri = f"{self.base_url}/callback"
 
     def get_oauth_session(self):
+        """Get OAuth2 session without proxy"""
         return OAuth2Session(
             self.client_id,
             redirect_uri=self.redirect_uri,
@@ -39,7 +40,7 @@ class XeroClient:
         try:
             oauth = self.get_oauth_session()
             authorization_url, state = oauth.authorization_url(
-                'https://login.xero.com/identity/connect/authorize',
+                'https://login.xero.com/identity/connect/authorize'
             )
             logger.info(f"Generated authorization URL: {authorization_url}")
             return authorization_url
