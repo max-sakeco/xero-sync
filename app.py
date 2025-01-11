@@ -18,16 +18,17 @@ is_production = os.environ.get('RENDER', False)
 
 @app.route('/')
 def index():
-    return {"status": "ok", "environment": "production" if is_production else "development"}
-
-@app.route('/health')
-def health():
+    """Root endpoint"""
     try:
         # Test Supabase connection
         supabase = SupabaseClient()
         # Test Xero client initialization
         xero = XeroClient(supabase)
-        return {"status": "healthy", "message": "Services initialized successfully"}
+        return {
+            "status": "ok", 
+            "environment": "production" if is_production else "development",
+            "services": "healthy"
+        }
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return {"status": "error", "message": str(e)}, 500
