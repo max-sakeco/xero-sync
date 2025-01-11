@@ -34,7 +34,7 @@ class SupabaseClient:
                 'tenant_id': tenant_id
             }
             
-            result = self.client.table('xero_tokens').upsert(data).execute()
+            result = self.client.table('tokens').upsert(data).execute()
             logger.info("Token stored successfully")
             return result.data if result else None
             
@@ -45,7 +45,7 @@ class SupabaseClient:
     def get_token(self) -> Optional[Dict]:
         """Get latest Xero token from Supabase"""
         try:
-            result = self.client.table('xero_tokens').select("*").limit(1).execute()
+            result = self.client.table('tokens').select("*").limit(1).execute()
             if result.data and len(result.data) > 0:
                 logger.info("Token retrieved successfully")
                 return result.data[0]
