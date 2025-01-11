@@ -27,6 +27,9 @@ class XeroClient:
         if not self.redirect_uri:
             self.redirect_uri = f"{self.base_url}/callback"
 
+        # Try to get existing token
+        self.ensure_authenticated()
+
     def get_oauth_session(self):
         """Get OAuth2 session without proxy"""
         return OAuth2Session(
@@ -84,16 +87,46 @@ class XeroClient:
 
             self.token = token_data['token']
             self.tenant_id = token_data['tenant_id']
-
+            
             # Check if token is expired
-            if self.is_token_expired():
-                logger.info("Token is expired, refreshing...")
-                self.refresh_token()
-
+            expires_at = self.token.get('expires_at')
+            if isinstance(expires_at, str):
+                expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                now = datetime.now(timezone.utc)
+                if expires_at <= now:
+                    logger.info("Token is expired, refreshing...")
+                    self.refresh_token()
+            
+            logger.info("Successfully authenticated with existing token")
             return True
+            
         except Exception as e:
             logger.error(f"Error ensuring authentication: {str(e)}")
             return False
+
+    def refresh_token(self):
+        """Refresh the Xero token"""
+        try:
+            oauth = OAuth2Session(self.client_id)
+            
+            extra = {
+                'client_id': self.client_id,
+                'client_secret': self.client_secret
+            }
+
+            self.token = oauth.refresh_token(
+                'https://identity.xero.com/connect/token',
+                refresh_token=self.token['refresh_token'],
+                **extra
+            )
+            
+            # Store refreshed token
+            self.supabase.store_token(self.token, self.tenant_id)
+            logger.info("Token refreshed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error refreshing token: {str(e)}")
+            raise
 
     def get_tenant_id(self, token):
         """Get Xero tenant ID"""
@@ -224,70 +257,21 @@ class XeroClient:
 
     def get_contacts(self, modified_since: Optional[datetime] = None) -> List[Dict]:
         """Get contacts from Xero"""
+        if not self.ensure_authenticated():
+            raise Exception("Not authenticated with Xero. Please visit /auth first")
+            
         try:
-            if not self.ensure_authenticated():
-                raise Exception("Not authenticated with Xero")
-
-            all_contacts = []
-            page = 1
-            page_size = 100  # Xero's maximum page size
-
-            while True:
-                headers = {
+            response = requests.get(
+                f"{self.api_url}/Contacts",
+                headers={
                     'Authorization': f"Bearer {self.token['access_token']}",
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'Xero-tenant-id': self.tenant_id
+                    'Xero-tenant-id': self.tenant_id,
+                    'Accept': 'application/json'
                 }
-
-                if modified_since:
-                    headers['If-Modified-Since'] = modified_since.strftime('%Y-%m-%dT%H:%M:%S')
-
-                params = {
-                    'page': page,
-                    'pageSize': page_size,
-                    'includeArchived': 'true',
-                    'order': 'UpdatedDateUTC ASC'
-                }
-
-                url = f"{self.api_url}/Contacts"
-                logger.info(f"Fetching contacts page {page}")
-                logger.debug(f"URL: {url}")
-                logger.debug(f"Headers: {headers}")
-                logger.debug(f"Params: {params}")
-
-                response = requests.get(url, headers=headers, params=params)
-                logger.debug(f"Response status: {response.status_code}")
-                logger.debug(f"Response content: {response.text[:1000]}")
-
-                if response.status_code == 404:
-                    logger.info("No more pages")
-                    break
-
-                response.raise_for_status()
-                data = response.json()
-                contacts = data.get('Contacts', [])
-
-                if not contacts:
-                    logger.info("No contacts in response")
-                    break
-
-                all_contacts.extend(contacts)
-                logger.info(f"Fetched {len(contacts)} contacts from page {page}")
-
-                # Check if we got less than a full page
-                if len(contacts) < page_size:
-                    logger.info("Last page (incomplete)")
-                    break
-
-                page += 1
-                logger.info(f"Moving to page {page}")
-
-            logger.info(f"Successfully fetched {len(all_contacts)} contacts in total")
-            return all_contacts
-
+            )
+            response.raise_for_status()
+            return response.json().get('Contacts', [])
+            
         except Exception as e:
-            logger.error(f"Error fetching contacts: {str(e)}")
-            if hasattr(e, 'response'):
-                logger.error(f"Response content: {e.response.text}")
+            logger.error(f"Error getting contacts: {str(e)}")
             raise
