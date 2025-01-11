@@ -6,6 +6,7 @@ import logging
 import requests
 import json
 from supabase_client import SupabaseClient
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +276,20 @@ class XeroClient:
             logger.error(f"Error in sync_all: {str(e)}")
             raise
 
+    def _parse_xero_date(self, date_string):
+        """Convert Xero date format to ISO format"""
+        if not date_string:
+            return None
+        
+        # Extract timestamp from "/Date(1736501024393+0000)/" format
+        match = re.search(r'/Date\((\d+)([+-]\d{4})\)/', date_string)
+        if match:
+            timestamp_ms = int(match.group(1))
+            # Convert milliseconds to seconds and create datetime
+            dt = datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc)
+            return dt.isoformat()
+        return date_string
+
     def process_invoice(self, invoice):
         """Process a single invoice and its line items"""
         try:
@@ -287,11 +302,13 @@ class XeroClient:
                 'sub_total': float(invoice.get('SubTotal', 0)),
                 'total_tax': float(invoice.get('TotalTax', 0)),
                 'total': float(invoice.get('Total', 0)),
-                'updated_date_utc': invoice.get('UpdatedDateUTC'),
+                'updated_date_utc': self._parse_xero_date(invoice.get('UpdatedDateUTC')),
                 'currency_code': invoice.get('CurrencyCode'),
                 'contact_id': invoice.get('Contact', {}).get('ContactID'),
                 'contact_name': invoice.get('Contact', {}).get('Name')
             }
+            
+            logger.info(f"Processing invoice {invoice_data['invoice_number']}")
             
             # Store invoice in Supabase
             self.supabase.client.table('invoices_new').upsert(
@@ -320,6 +337,8 @@ class XeroClient:
                     on_conflict='xero_invoice_id,line_item_id'
                 ).execute()
                 
+            logger.info(f"Successfully processed invoice {invoice_data['invoice_number']} with {len(line_items)} items")
+            
         except Exception as e:
             logger.error(f"Error processing invoice {invoice.get('InvoiceID')}: {str(e)}")
             raise
