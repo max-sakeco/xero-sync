@@ -1,26 +1,24 @@
-from flask import Flask, jsonify, redirect, request
 import os
+from flask import Flask, request, redirect, session, url_for
+from datetime import datetime, timezone
 import logging
-from sync_manager import SyncManager
-import requests
 from xero_client import XeroClient
 from supabase_client import SupabaseClient
-from urllib.parse import urlencode
-from datetime import datetime, timezone
 
-# Configure logging with more detail
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Initialize Flask app with secret key
 app = Flask(__name__)
-sync_manager = None
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key-here')
+
+# Get environment
+is_production = os.environ.get('RENDER', False)
 
 @app.route('/')
-def health():
-    return jsonify({'status': 'ok'})
+def index():
+    return {"status": "ok", "environment": "production" if is_production else "development"}
 
 @app.get("/auth")
 def auth():
@@ -34,39 +32,15 @@ def auth():
         logger.error(f"Auth failed: {str(e)}")
         return {"message": str(e), "status": "error"}
 
-@app.get("/callback")
-def auth_callback():
-    """Handle OAuth callback from Xero"""
+@app.route('/callback')
+def callback():
     try:
-        # Log all query parameters
-        logger.info("Callback received with params:")
-        for key, value in request.args.items():
-            logger.info(f"{key}: {value}")
-
-        code = request.args.get('code')
-        if not code:
-            error = request.args.get('error')
-            error_description = request.args.get('error_description')
-            logger.error(f"No code provided. Error: {error}, Description: {error_description}")
-            return {"error": error_description or "No code provided"}, 400
-
         xero = XeroClient(SupabaseClient())
-        success = xero.process_callback(code)
-
-        if success:
-            # Redirect to a success page
-            params = urlencode({'status': 'success'})
-            return redirect(f"/?{params}")
-        else:
-            # Redirect to an error page
-            params = urlencode({'status': 'error', 'message': 'Authentication failed'})
-            return redirect(f"/?{params}")
-
+        auth_response = xero.callback(request.url)
+        return redirect(url_for('index'))
     except Exception as e:
         logger.error(f"Callback failed: {str(e)}")
-        # Redirect to an error page
-        params = urlencode({'status': 'error', 'message': str(e)})
-        return redirect(f"/?{params}")
+        return {"error": str(e)}, 400
 
 @app.get("/sync")
 def sync():
@@ -373,10 +347,17 @@ def get_contacts():
         logger.error(f"Error getting contacts: {str(e)}")
         return {"error": str(e)}
 
-if __name__ == '__main__':
-    try:
-        port = int(os.environ.get('PORT', '3000'))
-        logger.info(f'Starting server on port {port}')
-        app.run(host='localhost', port=port, debug=True)
-    except Exception as e:
-        logger.error(f'Failed to start server: {e}')
+# Add health check endpoint for Render
+@app.route('/health')
+def health():
+    return {"status": "healthy"}
+
+# Production server configuration
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 3000))
+    if is_production:
+        # In production, let Gunicorn handle the serving
+        app.run(host="0.0.0.0", port=port)
+    else:
+        # In development, use Flask's built-in server with debug mode
+        app.run(host="0.0.0.0", port=port, debug=True)
