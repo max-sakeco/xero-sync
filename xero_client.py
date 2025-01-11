@@ -275,3 +275,40 @@ class XeroClient:
         except Exception as e:
             logger.error(f"Error getting contacts: {str(e)}")
             raise
+
+    def sync_all(self, batch_size=50):
+        """Sync all data from Xero in batches"""
+        try:
+            if not self.ensure_authenticated():
+                raise Exception("Not authenticated with Xero")
+            
+            total_processed = 0
+            batch_start = 0
+            results = {
+                "invoices": 0,
+                "items": 0,
+                "batches": 0
+            }
+            
+            while True:
+                invoices = self.get_invoices(offset=batch_start, limit=batch_size)
+                if not invoices:
+                    break
+                
+                for idx, invoice in enumerate(invoices):
+                    self.process_invoice(invoice)
+                    logger.info(f"Processing invoice {batch_start + idx + 1}/{total_processed + len(invoices)}")
+                
+                total_processed += len(invoices)
+                batch_start += batch_size
+                results["batches"] += 1
+                results["invoices"] = total_processed
+                
+                if len(invoices) < batch_size:
+                    break
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in sync_all: {str(e)}")
+            raise
