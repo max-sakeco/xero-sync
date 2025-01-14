@@ -245,13 +245,38 @@ class XeroClient:
             if not self.ensure_authenticated():
                 raise Exception("Not authenticated with Xero")
             
-            total_processed = 0
-            batch_start = 0
             results = {
+                "contacts": 0,
                 "invoices": 0,
                 "items": 0,
                 "batches": 0
             }
+            
+            # First sync contacts
+            logger.info("Starting contacts sync...")
+            contacts = self.get_contacts()
+            for contact in contacts:
+                contact_data = {
+                    'contact_id': contact.get('ContactID'),
+                    'tenant_id': self.tenant_id,
+                    'name': contact.get('Name'),
+                    'email': contact.get('EmailAddress'),
+                    'updated_date_utc': self._parse_xero_date(contact.get('UpdatedDateUTC'))
+                }
+                
+                # Store contact in Supabase
+                self.supabase.client.table('contacts').upsert(
+                    contact_data,
+                    on_conflict='contact_id'
+                ).execute()
+                
+            results["contacts"] = len(contacts)
+            logger.info(f"Completed contacts sync. Processed {len(contacts)} contacts")
+            
+            # Then sync invoices
+            logger.info("Starting invoices sync...")
+            total_processed = 0
+            batch_start = 0
             
             while True:
                 invoices = self.get_invoices(offset=batch_start, limit=batch_size)
@@ -270,6 +295,7 @@ class XeroClient:
                 if len(invoices) < batch_size:
                     break
             
+            logger.info(f"Completed full sync. Results: {results}")
             return results
             
         except Exception as e:
